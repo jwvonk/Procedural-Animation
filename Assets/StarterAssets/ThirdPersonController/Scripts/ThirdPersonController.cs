@@ -75,12 +75,16 @@ namespace StarterAssets
         [Tooltip("For locking the camera position on all axis")]
         public bool LockCameraPosition = false;
 
+        public AnimationCurve AccelerationCurve;
+
         // cinemachine
         private float _cinemachineTargetYaw;
         private float _cinemachineTargetPitch;
 
         // player
-        private float _speed;
+        private Vector3 _horizontalVelocity;
+        private Vector3 _acceleration = Vector3.zero;
+        private float _rotation;
         private float _animationBlend;
         private float _inputAngle = 0.0f;
         private float _rotationVelocity;
@@ -117,7 +121,7 @@ namespace StarterAssets
 #if ENABLE_INPUT_SYSTEM
                 return _playerInput.currentControlScheme == "KeyboardMouse";
 #else
-				return false;
+                return false;
 #endif
             }
         }
@@ -142,7 +146,7 @@ namespace StarterAssets
 #if ENABLE_INPUT_SYSTEM 
             _playerInput = GetComponent<PlayerInput>();
 #else
-			Debug.LogError( "Starter Assets package is missing dependencies. Please use Tools/Starter Assets/Reinstall Dependencies to fix it");
+            Debug.LogError( "Starter Assets package is missing dependencies. Please use Tools/Starter Assets/Reinstall Dependencies to fix it");
 #endif
 
             AssignAnimationIDs();
@@ -159,6 +163,7 @@ namespace StarterAssets
             JumpAndGravity();
             GroundedCheck();
             Move();
+
         }
 
         private void LateUpdate()
@@ -214,42 +219,69 @@ namespace StarterAssets
         private void Move()
         {
             // set target speed based on move speed, sprint speed and if sprint is pressed
-            float targetSpeed = _input.sprint ? SprintSpeed : MoveSpeed;
+            Vector3 targetVelocity = (_input.sprint ? SprintSpeed : MoveSpeed) * (Quaternion.Euler(0.0f, _inputAngle, 0.0f) * Vector3.forward);
 
             // a simplistic acceleration and deceleration designed to be easy to remove, replace, or iterate upon
 
             // note: Vector2's == operator uses approximation so is not floating point error prone, and is cheaper than magnitude
             // if there is no input, set the target speed to 0
-            if (_input.move == Vector2.zero) targetSpeed = 0.0f;
+            if (_input.move == Vector2.zero) targetVelocity = Vector3.zero;
 
             // a reference to the players current horizontal velocity
-            float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
+            Vector3 currentHorizontalVelocity = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z);
 
             float speedOffset = 0.1f;
-            float inputMagnitude = _input.analogMovement ? _input.move.magnitude : 1f;
+
+            if (_input.analogMovement)
+            {
+                targetVelocity *= _input.move.magnitude;
+            }
 
             // accelerate or decelerate to target speed
-            if (currentHorizontalSpeed < targetSpeed - speedOffset ||
-                currentHorizontalSpeed > targetSpeed + speedOffset)
+            if ((currentHorizontalVelocity - targetVelocity).magnitude > speedOffset)
             {
                 // creates curved result rather than a linear one giving a more organic speed change
                 // note T in Lerp is clamped, so we don't need to clamp our speed
-                _speed = Mathf.Lerp(currentHorizontalSpeed, targetSpeed * inputMagnitude,
+                _horizontalVelocity = Vector3.Lerp(currentHorizontalVelocity, targetVelocity,
                     Time.deltaTime * SpeedChangeRate);
-
-                // round speed to 3 decimal places
-                _speed = Mathf.Round(_speed * 1000f) / 1000f;
             }
             else
             {
-                _speed = targetSpeed;
+                _horizontalVelocity = targetVelocity;
             }
 
-            _animationBlend = Mathf.Lerp(_animationBlend, targetSpeed, Time.deltaTime * SpeedChangeRate);
+            _animationBlend = Mathf.Lerp(_animationBlend, targetVelocity.magnitude, Time.deltaTime * SpeedChangeRate);
             if (_animationBlend < 0.01f) _animationBlend = 0f;
 
-            // normalize movement direction
-            Vector3 currentHorizontalDirection = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).normalized;
+            Vector3 acceleration = Vector3.zero;
+
+            if ((_horizontalVelocity.normalized - currentHorizontalVelocity.normalized).magnitude > 0.001)
+            {
+                if (Mathf.Abs(_horizontalVelocity.magnitude - currentHorizontalVelocity.magnitude) > 0.0001)
+                {
+                    acceleration = (_horizontalVelocity - currentHorizontalVelocity) / Time.deltaTime;
+                }
+                else
+                {
+                    acceleration = (_horizontalVelocity - currentHorizontalVelocity.normalized * _horizontalVelocity.magnitude) / Time.deltaTime;
+                }
+
+            }
+            else if (Mathf.Abs(_horizontalVelocity.magnitude - currentHorizontalVelocity.magnitude) > 0.0001)
+            {
+                acceleration = (_horizontalVelocity - _horizontalVelocity.normalized * currentHorizontalVelocity.magnitude) / Time.deltaTime;
+            }
+
+            //if ((currentHorizontalDirection - _previousHorizontalDirection) / Time.deltaTime != Vector3.zero) Debug.Log((currentHorizontalDirection - _previousHorizontalDirection) / Time.deltaTime);
+
+            _acceleration = Vector3.Lerp(_acceleration, acceleration, Time.deltaTime * SpeedChangeRate);
+
+
+            // Determine the tilt angle based on the acceleration
+            float maxTiltAngle = 50f; // Maximum tilt angle in degrees
+            //Debug.Log(acceleration.normalized);
+            float tiltAngle = Mathf.Clamp(_acceleration.magnitude / (SprintSpeed * SpeedChangeRate), 0, 1) * maxTiltAngle;
+            Vector3 tiltAxis = Vector3.Cross(Vector3.up, _acceleration.normalized);
 
             // note: Vector2's != operator uses approximation so is not floating point error prone, and is cheaper than magnitude
             // if there is a move input rotate player when the player is moving
@@ -257,25 +289,31 @@ namespace StarterAssets
             {
                 _inputAngle = Mathf.Atan2(_input.move.x, _input.move.y) * Mathf.Rad2Deg + _mainCamera.transform.eulerAngles.y;
 
-                float targetRotation = Mathf.Atan2(currentHorizontalDirection.x, currentHorizontalDirection.z) * Mathf.Rad2Deg;
-                float rotation = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetRotation, ref _rotationVelocity,
+                float targetRotation = Mathf.Atan2(_horizontalVelocity.normalized.x, _horizontalVelocity.normalized.z) * Mathf.Rad2Deg;
+                _rotation = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetRotation, ref _rotationVelocity,
                     RotationSmoothTime);
-
-                // rotate to face current movement direction.
-                transform.rotation = Quaternion.Euler(0.0f, rotation, 0.0f);
             }
 
-            Vector3 targetDirection = Quaternion.Euler(0.0f, _inputAngle, 0.0f) * Vector3.forward;
+
+            transform.rotation = Quaternion.Euler(0f, _rotation, 0f);
+
+            Vector3 localTiltAxis = transform.InverseTransformDirection(tiltAxis);
+            Quaternion localTiltRotation = Quaternion.AngleAxis(tiltAngle, localTiltAxis);
+
+            // Apply the local tilt rotation
+            transform.rotation *= localTiltRotation;
+
+            //Vector3 targetDirection = Quaternion.Euler(0.0f, _inputAngle, 0.0f) * Vector3.forward;
 
             // move the player
-            _controller.Move(targetDirection.normalized * (_speed * Time.deltaTime) +
+            _controller.Move(_horizontalVelocity.normalized * (_horizontalVelocity.magnitude * Time.deltaTime) +
                              new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
 
             // update animator if using character
             if (_hasAnimator)
             {
                 _animator.SetFloat(_animIDSpeed, _animationBlend);
-                _animator.SetFloat(_animIDMotionSpeed, inputMagnitude);
+                _animator.SetFloat(_animIDMotionSpeed, _input.analogMovement ? _input.move.magnitude : 1f);
             }
         }
 
