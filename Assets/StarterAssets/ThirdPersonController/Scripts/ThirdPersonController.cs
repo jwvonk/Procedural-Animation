@@ -103,7 +103,6 @@ namespace StarterAssets
 
 
         // stride wheel
-        private Vector3 _previousHorizontalPosition;
         private float _strideWheelRotationAngle = 0;
 
         // timeout deltatime
@@ -115,7 +114,6 @@ namespace StarterAssets
         private int _animIDGrounded;
         private int _animIDJump;
         private int _animIDFreeFall;
-        private int _animIDMotionSpeed;
         private int _animIDStride;
 
 #if ENABLE_INPUT_SYSTEM 
@@ -199,15 +197,13 @@ namespace StarterAssets
             _animIDGrounded = Animator.StringToHash("Grounded");
             _animIDJump = Animator.StringToHash("Jump");
             _animIDFreeFall = Animator.StringToHash("FreeFall");
-            _animIDMotionSpeed = Animator.StringToHash("MotionSpeed");
             _animIDStride = Animator.StringToHash("Stride");
         }
 
         private void GroundedCheck()
         {
             // set sphere position, with offset
-            Vector3 spherePosition = new Vector3(transform.position.x, transform.position.y - GroundedOffset,
-                transform.position.z);
+            Vector3 spherePosition = transform.TransformPoint(_controller.center) + new Vector3(0, -_controller.center.y - GroundedOffset, 0);
             Grounded = Physics.CheckSphere(spherePosition, GroundedRadius, GroundLayers,
                 QueryTriggerInteraction.Ignore);
 
@@ -351,7 +347,6 @@ namespace StarterAssets
             if (_animationBlend < 0.01f) _animationBlend = 0f;
 
             _animator.SetFloat(_animIDSpeed, _animationBlend / SprintSpeed);
-            _animator.SetFloat(_animIDMotionSpeed, _input.analogMovement ? _input.move.magnitude : 1f);
 
             _animator.SetFloat(_animIDStride, Mathf.Floor(stride / 90) / 4);
         }
@@ -478,7 +473,7 @@ namespace StarterAssets
 
             // when selected, draw a gizmo in the position of, and matching radius of, the grounded collider
             Gizmos.DrawSphere(
-                new Vector3(transform.position.x, transform.position.y - GroundedOffset, transform.position.z),
+                transform.TransformPoint(_controller.center) + new Vector3(0, -_controller.center.y - GroundedOffset, 0),
                 GroundedRadius);
 
         }
