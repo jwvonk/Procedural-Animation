@@ -33,6 +33,14 @@ namespace StarterAssets
         [Tooltip("Acceleration Tilt in Degrees")]
         public float TiltChangeRate = 1f;
 
+        [Tooltip("Walk Wheel Radius")]
+        public float WalkWheelRadius = 1f;
+
+        [Tooltip("Sprint Wheel Radius")]
+        public float SprintWheelRadius = 1f;
+
+        public bool StrideWheelVisible = false;
+
         public AudioClip LandingAudioClip;
         public AudioClip[] FootstepAudioClips;
         [Range(0, 1)] public float FootstepAudioVolume = 0.5f;
@@ -80,8 +88,6 @@ namespace StarterAssets
         [Tooltip("For locking the camera position on all axis")]
         public bool LockCameraPosition = false;
 
-        public AnimationCurve AccelerationCurve;
-
         // cinemachine
         private float _cinemachineTargetYaw;
         private float _cinemachineTargetPitch;
@@ -97,7 +103,7 @@ namespace StarterAssets
 
 
         // stride wheel
-        private float _strideWheelCircumference;
+        private Vector3 _previousHorizontalPosition;
         private float _strideWheelRotationAngle = 0;
 
         // timeout deltatime
@@ -110,6 +116,7 @@ namespace StarterAssets
         private int _animIDJump;
         private int _animIDFreeFall;
         private int _animIDMotionSpeed;
+        private int _animIDStride;
 
 #if ENABLE_INPUT_SYSTEM 
         private PlayerInput _playerInput;
@@ -119,6 +126,7 @@ namespace StarterAssets
         private StarterAssetsInputs _input;
         private GameObject _mainCamera;
         [SerializeField] private GameObject _strideWheel;
+        private Renderer _strideWheelRenderer;
 
         private const float _threshold = 0.01f;
 
@@ -165,7 +173,10 @@ namespace StarterAssets
             _jumpTimeoutDelta = JumpTimeout;
             _fallTimeoutDelta = FallTimeout;
 
-            _strideWheelCircumference = _strideWheel.transform.localScale.x * Mathf.PI;
+
+            _strideWheel = Instantiate(_strideWheel, transform);
+            _strideWheelRenderer = _strideWheel.GetComponent<Renderer>();
+            
         }
 
         private void Update()
@@ -175,7 +186,6 @@ namespace StarterAssets
             JumpAndGravity();
             GroundedCheck();
             Move();
-
         }
 
         private void LateUpdate()
@@ -190,6 +200,7 @@ namespace StarterAssets
             _animIDJump = Animator.StringToHash("Jump");
             _animIDFreeFall = Animator.StringToHash("FreeFall");
             _animIDMotionSpeed = Animator.StringToHash("MotionSpeed");
+            _animIDStride = Animator.StringToHash("Stride");
         }
 
         private void GroundedCheck()
@@ -230,17 +241,20 @@ namespace StarterAssets
 
         private void Move()
         {
+            Vector3 currentHorizontalVelocity = new(_controller.velocity.x, 0, _controller.velocity.z);
 
-            Vector3 currentHorizontalVelocity = new Vector3(_controller.velocity.x, 0, _controller.velocity.z);
+            UpdateStrideWheel(currentHorizontalVelocity.magnitude);
 
-            ApplyYaw(currentHorizontalVelocity);
+            if (_hasAnimator)
+            {
+                UpdateAnimator(currentHorizontalVelocity.magnitude, _strideWheelRotationAngle);
+            }
+
+            ApplyYaw(currentHorizontalVelocity.normalized);
 
             CalculateAcceleration(_previousHorizontalVelocity, currentHorizontalVelocity);
 
             ApplyTilt(_smoothedAcceleration);
-            
-            UpdateAnimator();
-            UpdateWheelRotation(currentHorizontalVelocity);
 
             _previousHorizontalVelocity = currentHorizontalVelocity;
 
@@ -248,25 +262,47 @@ namespace StarterAssets
 
             Vector3 targetVelocity = GetTargetVelocity(inputAngle);
 
-            _animationBlend = Mathf.Lerp(_animationBlend, targetVelocity.magnitude, Time.deltaTime * SpeedChangeRate);
-            _animationBlend = _animationBlend < 0.01f ? 0f : _animationBlend;
-
             Vector3 newHorizontalVelocity = GetNewVelocity(targetVelocity, currentHorizontalVelocity);
             MovePlayer(newHorizontalVelocity);
         }
 
-        private void ApplyYaw(Vector3 currentHorizontalVelocity)
+        private void UpdateStrideWheel(float currentHorizontalSpeed)
+        {
+            _strideWheelRenderer.enabled = StrideWheelVisible;
+
+            float lowerBound = 2;
+
+            float t = (currentHorizontalSpeed - lowerBound) / ((SprintSpeed - lowerBound) * .6f);
+
+            float radius = Mathf.Lerp(WalkWheelRadius, SprintWheelRadius, t);
+            _strideWheel.transform.localScale = new Vector3(radius * 2, radius * 2, radius * 2);
+            _strideWheel.transform.localPosition = new Vector3(0, radius, 0);
+
+            float distanceMoved = currentHorizontalSpeed * Time.deltaTime;
+
+            float circumference = radius * 2 * Mathf.PI;
+
+            // Calculate how much the wheel should rotate based on distance moved
+            float rotationAngle = distanceMoved / circumference * 360f;
+
+            // Update the wheel's rotation angle
+            _strideWheelRotationAngle += rotationAngle;
+            _strideWheelRotationAngle %= 360f; // Ensure the angle stays within 0-360
+
+            // Apply the rotation to the wheel
+            _strideWheel.transform.localRotation = Quaternion.Euler(0f, 90, _strideWheelRotationAngle);
+        }
+
+        private void ApplyYaw(Vector3 currentHorizontalDirection)
         {
             if (_input.move != Vector2.zero)
             {
-                float targetRotation = Mathf.Atan2(currentHorizontalVelocity.normalized.x, currentHorizontalVelocity.normalized.z) * Mathf.Rad2Deg;
+                float targetRotation = Mathf.Atan2(currentHorizontalDirection.x, currentHorizontalDirection.z) * Mathf.Rad2Deg;
                 _rotation = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetRotation, ref _rotationVelocity, RotationSmoothTime);
             }
 
             transform.rotation = Quaternion.Euler(0, _rotation, 0);
         }
-
-        float max = 0;
 
         private void CalculateAcceleration(Vector3 previousHorizontalVelocity, Vector3 currentHorizontalVelocity)
         {
@@ -309,13 +345,15 @@ namespace StarterAssets
             transform.rotation *= localTiltRotation;
         }
 
-        private void UpdateAnimator()
+        private void UpdateAnimator(float speed, float stride)
         {
-            if (_hasAnimator)
-            {
-                _animator.SetFloat(_animIDSpeed, _animationBlend);
-                _animator.SetFloat(_animIDMotionSpeed, _input.analogMovement ? _input.move.magnitude : 1f);
-            }
+            _animationBlend = Mathf.Lerp(_animationBlend, speed, Time.deltaTime * SpeedChangeRate);
+            if (_animationBlend < 0.01f) _animationBlend = 0f;
+
+            _animator.SetFloat(_animIDSpeed, _animationBlend / SprintSpeed);
+            _animator.SetFloat(_animIDMotionSpeed, _input.analogMovement ? _input.move.magnitude : 1f);
+
+            _animator.SetFloat(_animIDStride, Mathf.Floor(stride / 90) / 4);
         }
 
         private Vector3 GetTargetVelocity(float inputAngle)
@@ -344,32 +382,15 @@ namespace StarterAssets
             {
                 return targetVelocity;
             }
-
         }
 
-        private void MovePlayer(Vector3 moveHorizontalVelocity)
+        private void MovePlayer(Vector3 newHorizontalVelocity)
         {
-            _controller.Move(moveHorizontalVelocity.normalized * (moveHorizontalVelocity.magnitude * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
+            _controller.Move(newHorizontalVelocity.normalized * (newHorizontalVelocity.magnitude * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
         }
 
 
-        private void UpdateWheelRotation(Vector3 currentHorizontalVelocity)
-        {
-            Vector3 currentPosition = transform.position;
-            float distanceMoved = currentHorizontalVelocity.magnitude * Time.deltaTime;
 
-            // Calculate how much the wheel should rotate based on distance moved
-            float rotationAngle = (distanceMoved / _strideWheelCircumference) * 360f;
-
-            // Update the wheel's rotation angle
-            _strideWheelRotationAngle += rotationAngle;
-            _strideWheelRotationAngle %= 360f; // Ensure the angle stays within 0-360
-
-            // Apply the rotation to the wheel
-            _strideWheel.transform.localRotation = Quaternion.Euler(0f, 90, _strideWheelRotationAngle);
-
-            // Update previous position
-        }
 
         private void JumpAndGravity()
         {
@@ -459,6 +480,7 @@ namespace StarterAssets
             Gizmos.DrawSphere(
                 new Vector3(transform.position.x, transform.position.y - GroundedOffset, transform.position.z),
                 GroundedRadius);
+
         }
 
         private void OnFootstep(AnimationEvent animationEvent)
