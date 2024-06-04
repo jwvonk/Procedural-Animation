@@ -41,6 +41,8 @@ namespace StarterAssets
 
         public bool StrideWheelVisible = false;
 
+        public bool trailVisible = false;
+
         public AudioClip LandingAudioClip;
         public AudioClip[] FootstepAudioClips;
         [Range(0, 1)] public float FootstepAudioVolume = 0.5f;
@@ -99,11 +101,11 @@ namespace StarterAssets
         private float _animationBlend;
         private float _rotationVelocity;
         private float _verticalVelocity;
-        private float _terminalVelocity = 53.0f;
-
-
-        // stride wheel
-        private float _strideWheelRotationAngle = 0;
+        private float _terminalVelocity = -53.0f;
+        private float _previousStrideWheelRotation = 0;
+        private bool _bounce = false;
+        private float _bounceOffset;
+        private float _bounceSpeedMult;
 
         // timeout deltatime
         private float _jumpTimeoutDelta;
@@ -125,6 +127,7 @@ namespace StarterAssets
         private GameObject _mainCamera;
         [SerializeField] private GameObject _strideWheel;
         private Renderer _strideWheelRenderer;
+        [SerializeField] private GameObject _trail;
 
         private const float _threshold = 0.01f;
 
@@ -155,7 +158,7 @@ namespace StarterAssets
         private void Start()
         {
             _cinemachineTargetYaw = CinemachineCameraTarget.transform.rotation.eulerAngles.y;
-            
+
             _hasAnimator = TryGetComponent(out _animator);
             _controller = GetComponent<CharacterController>();
             _input = GetComponent<StarterAssetsInputs>();
@@ -174,7 +177,9 @@ namespace StarterAssets
 
             _strideWheel = Instantiate(_strideWheel, transform);
             _strideWheelRenderer = _strideWheel.GetComponent<Renderer>();
-            
+
+            _trail = Instantiate(_trail, transform);
+
         }
 
         private void Update()
@@ -239,12 +244,14 @@ namespace StarterAssets
         {
             Vector3 currentHorizontalVelocity = new(_controller.velocity.x, 0, _controller.velocity.z);
 
-            UpdateStrideWheel(currentHorizontalVelocity.magnitude);
+            float currentStrideWheelRotation = GetStrideWheelRotation(_previousStrideWheelRotation, currentHorizontalVelocity.magnitude);
 
             if (_hasAnimator)
             {
-                UpdateAnimator(currentHorizontalVelocity.magnitude, _strideWheelRotationAngle);
+                UpdateAnimator(currentHorizontalVelocity.magnitude, currentStrideWheelRotation);
             }
+
+            UpdateBounce(_previousStrideWheelRotation, currentStrideWheelRotation, currentHorizontalVelocity.magnitude);
 
             ApplyYaw(currentHorizontalVelocity.normalized);
 
@@ -252,17 +259,19 @@ namespace StarterAssets
 
             ApplyTilt(_smoothedAcceleration);
 
-            _previousHorizontalVelocity = currentHorizontalVelocity;
-
             float inputAngle = Mathf.Atan2(_input.move.x, _input.move.y) * Mathf.Rad2Deg + _mainCamera.transform.eulerAngles.y;
 
             Vector3 targetVelocity = GetTargetVelocity(inputAngle);
 
             Vector3 newHorizontalVelocity = GetNewVelocity(targetVelocity, currentHorizontalVelocity);
             MovePlayer(newHorizontalVelocity);
+
+            _previousHorizontalVelocity = currentHorizontalVelocity;
+            _previousStrideWheelRotation = currentStrideWheelRotation;
+
         }
 
-        private void UpdateStrideWheel(float currentHorizontalSpeed)
+        private float GetStrideWheelRotation(float previousStrideWheelRotation, float currentHorizontalSpeed)
         {
             _strideWheelRenderer.enabled = StrideWheelVisible;
 
@@ -281,12 +290,34 @@ namespace StarterAssets
             // Calculate how much the wheel should rotate based on distance moved
             float rotationAngle = distanceMoved / circumference * 360f;
 
-            // Update the wheel's rotation angle
-            _strideWheelRotationAngle += rotationAngle;
-            _strideWheelRotationAngle %= 360f; // Ensure the angle stays within 0-360
+            float currentStrideWheelRotation = previousStrideWheelRotation + rotationAngle;
+
+            currentStrideWheelRotation %= 360f; // Ensure the angle stays within 0-360
 
             // Apply the rotation to the wheel
-            _strideWheel.transform.localRotation = Quaternion.Euler(0f, 90, _strideWheelRotationAngle);
+            _strideWheel.transform.localRotation = Quaternion.Euler(0f, 90, currentStrideWheelRotation);
+
+            return currentStrideWheelRotation;
+        }
+
+        private void UpdateBounce(float previousStrideRotation, float currentStrideRotation, float currentHorizontalSpeed)
+        {
+            float speedOffset = 0.1f;
+            if (previousStrideRotation % 180 < 45 && currentStrideRotation % 180 > 45)
+            {
+                _bounce = currentHorizontalSpeed > MoveSpeed + speedOffset && Grounded;
+                _bounceSpeedMult = 1 - (currentHorizontalSpeed / SprintSpeed);
+            }
+
+            if (currentHorizontalSpeed < MoveSpeed + speedOffset)
+            {
+                _bounce = false;
+                _bounceOffset -= 2f * Time.deltaTime;
+                if (_bounceOffset < 0) _bounceOffset = 0;
+            } else
+            {
+                _bounceOffset = _bounce ? Mathf.Abs(Mathf.Sin((currentStrideRotation + 135) * Mathf.Deg2Rad)) * (.5f * _bounceSpeedMult + 0.2f) : 0;
+            }
         }
 
         private void ApplyYaw(Vector3 currentHorizontalDirection)
@@ -332,8 +363,8 @@ namespace StarterAssets
         private void ApplyTilt(Vector3 smoothedAcceleration)
         {
 
-            float tiltAngle = _smoothedAcceleration.magnitude * tiltStrength;
-            Vector3 tiltAxis = Vector3.Cross(Vector3.up, _smoothedAcceleration.normalized);
+            float tiltAngle = smoothedAcceleration.magnitude * tiltStrength;
+            Vector3 tiltAxis = Vector3.Cross(Vector3.up, smoothedAcceleration.normalized);
 
             Vector3 localTiltAxis = transform.InverseTransformDirection(tiltAxis);
             Quaternion localTiltRotation = Quaternion.AngleAxis(tiltAngle, localTiltAxis);
@@ -348,7 +379,7 @@ namespace StarterAssets
 
             _animator.SetFloat(_animIDSpeed, _animationBlend / SprintSpeed);
 
-            _animator.SetFloat(_animIDStride, Mathf.Floor(stride / 90) / 4);
+            _animator.SetFloat(_animIDStride, Mathf.Floor(stride / 90f) / 4);
         }
 
         private Vector3 GetTargetVelocity(float inputAngle)
@@ -384,8 +415,15 @@ namespace StarterAssets
             _controller.Move(newHorizontalVelocity.normalized * (newHorizontalVelocity.magnitude * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
         }
 
+        private void OnAnimatorIK(int layerIndex)
+        {
+            Vector3 rootPosition = _animator.bodyPosition;
+            rootPosition.y += _bounceOffset;
+            _animator.bodyPosition = rootPosition;
 
-
+            _trail.transform.position = rootPosition;
+            _trail.SetActive(trailVisible);
+        }
 
         private void JumpAndGravity()
         {
@@ -450,7 +488,7 @@ namespace StarterAssets
             }
 
             // apply gravity over time if under terminal (multiply by delta time twice to linearly speed up over time)
-            if (_verticalVelocity < _terminalVelocity)
+            if (_verticalVelocity > _terminalVelocity)
             {
                 _verticalVelocity += Gravity * Time.deltaTime;
             }
@@ -465,6 +503,9 @@ namespace StarterAssets
 
         private void OnDrawGizmosSelected()
         {
+            if (!Application.isPlaying)
+                return;
+
             Color transparentGreen = new Color(0.0f, 1.0f, 0.0f, 0.35f);
             Color transparentRed = new Color(1.0f, 0.0f, 0.0f, 0.35f);
 
@@ -498,7 +539,7 @@ namespace StarterAssets
             }
         }
 
-                public static float Remap(float value, float fromMin, float fromMax, float toMin, float toMax)
+        public static float Remap(float value, float fromMin, float fromMax, float toMin, float toMax)
         {
             return Mathf.Lerp(toMin, toMax, Mathf.InverseLerp(fromMin, fromMax, value));
         }
