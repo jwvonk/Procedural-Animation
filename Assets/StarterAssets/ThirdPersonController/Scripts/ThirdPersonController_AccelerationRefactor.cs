@@ -12,7 +12,7 @@ namespace StarterAssets
 #if ENABLE_INPUT_SYSTEM 
     [RequireComponent(typeof(PlayerInput))]
 #endif
-    public class ThirdPersonController : MonoBehaviour
+    public class ThirdPersonController_AccelerationRefactor : MonoBehaviour
     {
         [Header("Player")]
         [Tooltip("Move speed of the character in m/s")]
@@ -32,16 +32,6 @@ namespace StarterAssets
 
         [Tooltip("Acceleration Tilt in Degrees")]
         public float TiltChangeRate = 1f;
-
-        [Tooltip("Walk Wheel Radius")]
-        public float WalkWheelRadius = 1f;
-
-        [Tooltip("Sprint Wheel Radius")]
-        public float SprintWheelRadius = 1f;
-
-        public bool StrideWheelVisible = false;
-
-        public bool trailVisible = false;
 
         public AudioClip LandingAudioClip;
         public AudioClip[] FootstepAudioClips;
@@ -90,6 +80,8 @@ namespace StarterAssets
         [Tooltip("For locking the camera position on all axis")]
         public bool LockCameraPosition = false;
 
+        public AnimationCurve AccelerationCurve;
+
         // cinemachine
         private float _cinemachineTargetYaw;
         private float _cinemachineTargetPitch;
@@ -101,11 +93,12 @@ namespace StarterAssets
         private float _animationBlend;
         private float _rotationVelocity;
         private float _verticalVelocity;
-        private float _terminalVelocity = -53.0f;
-        private float _previousStrideWheelRotation = 0;
-        private bool _bounce = false;
-        private float _bounceOffset;
-        private float _bounceSpeedMult;
+        private float _terminalVelocity = 53.0f;
+
+
+        // stride wheel
+        private float _strideWheelCircumference;
+        private float _strideWheelRotationAngle = 0;
 
         // timeout deltatime
         private float _jumpTimeoutDelta;
@@ -116,7 +109,7 @@ namespace StarterAssets
         private int _animIDGrounded;
         private int _animIDJump;
         private int _animIDFreeFall;
-        private int _animIDStride;
+        private int _animIDMotionSpeed;
 
 #if ENABLE_INPUT_SYSTEM 
         private PlayerInput _playerInput;
@@ -126,8 +119,6 @@ namespace StarterAssets
         private StarterAssetsInputs _input;
         private GameObject _mainCamera;
         [SerializeField] private GameObject _strideWheel;
-        private Renderer _strideWheelRenderer;
-        [SerializeField] private GameObject _trail;
 
         private const float _threshold = 0.01f;
 
@@ -158,7 +149,7 @@ namespace StarterAssets
         private void Start()
         {
             _cinemachineTargetYaw = CinemachineCameraTarget.transform.rotation.eulerAngles.y;
-
+            
             _hasAnimator = TryGetComponent(out _animator);
             _controller = GetComponent<CharacterController>();
             _input = GetComponent<StarterAssetsInputs>();
@@ -174,12 +165,7 @@ namespace StarterAssets
             _jumpTimeoutDelta = JumpTimeout;
             _fallTimeoutDelta = FallTimeout;
 
-
-            _strideWheel = Instantiate(_strideWheel, transform);
-            _strideWheelRenderer = _strideWheel.GetComponent<Renderer>();
-
-            _trail = Instantiate(_trail, transform);
-
+            _strideWheelCircumference = _strideWheel.transform.localScale.x * Mathf.PI;
         }
 
         private void Update()
@@ -189,6 +175,7 @@ namespace StarterAssets
             JumpAndGravity();
             GroundedCheck();
             Move();
+
         }
 
         private void LateUpdate()
@@ -202,13 +189,14 @@ namespace StarterAssets
             _animIDGrounded = Animator.StringToHash("Grounded");
             _animIDJump = Animator.StringToHash("Jump");
             _animIDFreeFall = Animator.StringToHash("FreeFall");
-            _animIDStride = Animator.StringToHash("Stride");
+            _animIDMotionSpeed = Animator.StringToHash("MotionSpeed");
         }
 
         private void GroundedCheck()
         {
             // set sphere position, with offset
-            Vector3 spherePosition = transform.TransformPoint(_controller.center) + new Vector3(0, -_controller.center.y - GroundedOffset, 0);
+            Vector3 spherePosition = new Vector3(transform.position.x, transform.position.y - GroundedOffset,
+                transform.position.z);
             Grounded = Physics.CheckSphere(spherePosition, GroundedRadius, GroundLayers,
                 QueryTriggerInteraction.Ignore);
 
@@ -242,94 +230,43 @@ namespace StarterAssets
 
         private void Move()
         {
-            Vector3 currentHorizontalVelocity = new(_controller.velocity.x, 0, _controller.velocity.z);
 
-            float currentStrideWheelRotation = GetStrideWheelRotation(_previousStrideWheelRotation, currentHorizontalVelocity.magnitude);
+            Vector3 currentHorizontalVelocity = new Vector3(_controller.velocity.x, 0, _controller.velocity.z);
 
-            if (_hasAnimator)
-            {
-                UpdateAnimator(currentHorizontalVelocity.magnitude, currentStrideWheelRotation);
-            }
-
-            UpdateBounce(_previousStrideWheelRotation, currentStrideWheelRotation, currentHorizontalVelocity.magnitude);
-
-            ApplyYaw(currentHorizontalVelocity.normalized);
+            ApplyYaw(currentHorizontalVelocity);
 
             CalculateAcceleration(_previousHorizontalVelocity, currentHorizontalVelocity);
 
             ApplyTilt(_smoothedAcceleration);
+            
+            UpdateAnimator();
+            UpdateWheelRotation(currentHorizontalVelocity);
+
+            _previousHorizontalVelocity = currentHorizontalVelocity;
 
             float inputAngle = Mathf.Atan2(_input.move.x, _input.move.y) * Mathf.Rad2Deg + _mainCamera.transform.eulerAngles.y;
 
             Vector3 targetVelocity = GetTargetVelocity(inputAngle);
 
+            _animationBlend = Mathf.Lerp(_animationBlend, targetVelocity.magnitude, Time.deltaTime * SpeedChangeRate);
+            _animationBlend = _animationBlend < 0.01f ? 0f : _animationBlend;
+
             Vector3 newHorizontalVelocity = GetNewVelocity(targetVelocity, currentHorizontalVelocity);
             MovePlayer(newHorizontalVelocity);
-
-            _previousHorizontalVelocity = currentHorizontalVelocity;
-            _previousStrideWheelRotation = currentStrideWheelRotation;
-
         }
 
-        private float GetStrideWheelRotation(float previousStrideWheelRotation, float currentHorizontalSpeed)
-        {
-            _strideWheelRenderer.enabled = StrideWheelVisible;
-
-            float lowerBound = 2;
-
-            float t = (currentHorizontalSpeed - lowerBound) / ((SprintSpeed - lowerBound) * .6f);
-
-            float radius = Mathf.Lerp(WalkWheelRadius, SprintWheelRadius, t);
-            _strideWheel.transform.localScale = new Vector3(radius * 2, radius * 2, radius * 2);
-            _strideWheel.transform.localPosition = new Vector3(0, radius, 0);
-
-            float distanceMoved = currentHorizontalSpeed * Time.deltaTime;
-
-            float circumference = radius * 2 * Mathf.PI;
-
-            // Calculate how much the wheel should rotate based on distance moved
-            float rotationAngle = distanceMoved / circumference * 360f;
-
-            float currentStrideWheelRotation = previousStrideWheelRotation + rotationAngle;
-
-            currentStrideWheelRotation %= 360f; // Ensure the angle stays within 0-360
-
-            // Apply the rotation to the wheel
-            _strideWheel.transform.localRotation = Quaternion.Euler(0f, 90, currentStrideWheelRotation);
-
-            return currentStrideWheelRotation;
-        }
-
-        private void UpdateBounce(float previousStrideRotation, float currentStrideRotation, float currentHorizontalSpeed)
-        {
-            float speedOffset = 0.1f;
-            if (previousStrideRotation % 180 < 135 && currentStrideRotation % 180 > 135)
-            {
-                _bounce = currentHorizontalSpeed > 0.7 * SprintSpeed + speedOffset && Grounded;
-                _bounceSpeedMult = 1 - (currentHorizontalSpeed / SprintSpeed);
-            }
-
-            if (currentHorizontalSpeed < 0.7 * SprintSpeed + speedOffset)
-            {
-                _bounce = false;
-                _bounceOffset -= 2f * Time.deltaTime;
-                if (_bounceOffset < 0) _bounceOffset = 0;
-            } else
-            {
-                _bounceOffset = _bounce ? Mathf.Abs(Mathf.Sin((currentStrideRotation + 45) * Mathf.Deg2Rad)) * (.4f * _bounceSpeedMult + 0.1f) : 0;
-            }
-        }
-
-        private void ApplyYaw(Vector3 currentHorizontalDirection)
+        private void ApplyYaw(Vector3 currentHorizontalVelocity)
         {
             if (_input.move != Vector2.zero)
             {
-                float targetRotation = Mathf.Atan2(currentHorizontalDirection.x, currentHorizontalDirection.z) * Mathf.Rad2Deg;
+                float targetRotation = Mathf.Atan2(currentHorizontalVelocity.normalized.x, currentHorizontalVelocity.normalized.z) * Mathf.Rad2Deg;
                 _rotation = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetRotation, ref _rotationVelocity, RotationSmoothTime);
             }
 
             transform.rotation = Quaternion.Euler(0, _rotation, 0);
         }
+
+        float max = 0;
 
         private void CalculateAcceleration(Vector3 previousHorizontalVelocity, Vector3 currentHorizontalVelocity)
         {
@@ -363,8 +300,8 @@ namespace StarterAssets
         private void ApplyTilt(Vector3 smoothedAcceleration)
         {
 
-            float tiltAngle = smoothedAcceleration.magnitude * tiltStrength;
-            Vector3 tiltAxis = Vector3.Cross(Vector3.up, smoothedAcceleration.normalized);
+            float tiltAngle = _smoothedAcceleration.magnitude * tiltStrength;
+            Vector3 tiltAxis = Vector3.Cross(Vector3.up, _smoothedAcceleration.normalized);
 
             Vector3 localTiltAxis = transform.InverseTransformDirection(tiltAxis);
             Quaternion localTiltRotation = Quaternion.AngleAxis(tiltAngle, localTiltAxis);
@@ -372,16 +309,13 @@ namespace StarterAssets
             transform.rotation *= localTiltRotation;
         }
 
-        private void UpdateAnimator(float speed, float stride)
+        private void UpdateAnimator()
         {
-            _animationBlend = Mathf.Lerp(_animationBlend, speed, Time.deltaTime * SpeedChangeRate);
-            if (_animationBlend < 0.01f) _animationBlend = 0f;
-
-            _animator.SetFloat(_animIDSpeed, _animationBlend / SprintSpeed);
-
-            float u = stride % 180 / 180f;
-
-            _animator.SetFloat(_animIDStride, Cerp(Mathf.Floor(stride / 180f), Mathf.Ceil(stride / 180f), u) / 2);
+            if (_hasAnimator)
+            {
+                _animator.SetFloat(_animIDSpeed, _animationBlend);
+                _animator.SetFloat(_animIDMotionSpeed, _input.analogMovement ? _input.move.magnitude : 1f);
+            }
         }
 
         private Vector3 GetTargetVelocity(float inputAngle)
@@ -410,21 +344,31 @@ namespace StarterAssets
             {
                 return targetVelocity;
             }
+
         }
 
-        private void MovePlayer(Vector3 newHorizontalVelocity)
+        private void MovePlayer(Vector3 moveHorizontalVelocity)
         {
-            _controller.Move(newHorizontalVelocity.normalized * (newHorizontalVelocity.magnitude * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
+            _controller.Move(moveHorizontalVelocity.normalized * (moveHorizontalVelocity.magnitude * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
         }
 
-        private void OnAnimatorIK(int layerIndex)
-        {
-            Vector3 rootPosition = _animator.bodyPosition;
-            rootPosition.y += _bounceOffset;
-            _animator.bodyPosition = rootPosition;
 
-            _trail.transform.position = rootPosition;
-            _trail.SetActive(trailVisible);
+        private void UpdateWheelRotation(Vector3 currentHorizontalVelocity)
+        {
+            Vector3 currentPosition = transform.position;
+            float distanceMoved = currentHorizontalVelocity.magnitude * Time.deltaTime;
+
+            // Calculate how much the wheel should rotate based on distance moved
+            float rotationAngle = (distanceMoved / _strideWheelCircumference) * 360f;
+
+            // Update the wheel's rotation angle
+            _strideWheelRotationAngle += rotationAngle;
+            _strideWheelRotationAngle %= 360f; // Ensure the angle stays within 0-360
+
+            // Apply the rotation to the wheel
+            _strideWheel.transform.localRotation = Quaternion.Euler(0f, 90, _strideWheelRotationAngle);
+
+            // Update previous position
         }
 
         private void JumpAndGravity()
@@ -490,7 +434,7 @@ namespace StarterAssets
             }
 
             // apply gravity over time if under terminal (multiply by delta time twice to linearly speed up over time)
-            if (_verticalVelocity > _terminalVelocity)
+            if (_verticalVelocity < _terminalVelocity)
             {
                 _verticalVelocity += Gravity * Time.deltaTime;
             }
@@ -507,7 +451,6 @@ namespace StarterAssets
         {
             if (!Application.isPlaying || !isActiveAndEnabled)
                 return;
-
             Color transparentGreen = new Color(0.0f, 1.0f, 0.0f, 0.35f);
             Color transparentRed = new Color(1.0f, 0.0f, 0.0f, 0.35f);
 
@@ -516,9 +459,8 @@ namespace StarterAssets
 
             // when selected, draw a gizmo in the position of, and matching radius of, the grounded collider
             Gizmos.DrawSphere(
-                transform.TransformPoint(_controller.center) + new Vector3(0, -_controller.center.y - GroundedOffset, 0),
+                new Vector3(transform.position.x, transform.position.y - GroundedOffset, transform.position.z),
                 GroundedRadius);
-
         }
 
         private void OnFootstep(AnimationEvent animationEvent)
@@ -541,17 +483,9 @@ namespace StarterAssets
             }
         }
 
-        public static float Remap(float value, float fromMin, float fromMax, float toMin, float toMax)
+                public static float Remap(float value, float fromMin, float fromMax, float toMin, float toMax)
         {
             return Mathf.Lerp(toMin, toMax, Mathf.InverseLerp(fromMin, fromMax, value));
-        }
-
-        public static float Cerp(float k0, float k1, float u)
-        {
-            u = Mathf.Clamp01(u);
-            float t1 = 2 * Mathf.Pow(u, 3) - 3 * Mathf.Pow(u, 2) + 1;
-            float t2 = 3 * Mathf.Pow(u, 2) - 2 * Mathf.Pow(u, 3);
-            return k0 * t1 + k1 * t2;
         }
 
     }

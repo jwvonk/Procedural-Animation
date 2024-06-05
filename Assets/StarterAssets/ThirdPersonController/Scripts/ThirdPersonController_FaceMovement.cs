@@ -1,4 +1,4 @@
-﻿ using UnityEngine;
+using UnityEngine;
 #if ENABLE_INPUT_SYSTEM 
 using UnityEngine.InputSystem;
 #endif
@@ -12,7 +12,7 @@ namespace StarterAssets
 #if ENABLE_INPUT_SYSTEM 
     [RequireComponent(typeof(PlayerInput))]
 #endif
-    public class ThirdPersonController : MonoBehaviour
+    public class ThirdPersonController_FaceMovement : MonoBehaviour
     {
         [Header("Player")]
         [Tooltip("Move speed of the character in m/s")]
@@ -22,26 +22,11 @@ namespace StarterAssets
         public float SprintSpeed = 5.335f;
 
         [Tooltip("How fast the character turns to face movement direction")]
+        [Range(0.0f, 0.3f)]
         public float RotationSmoothTime = 0.12f;
 
         [Tooltip("Acceleration and deceleration")]
         public float SpeedChangeRate = 10.0f;
-
-        [Tooltip("Acceleration Tilt in Degrees")]
-        public float tiltStrength = 50f;
-
-        [Tooltip("Acceleration Tilt in Degrees")]
-        public float TiltChangeRate = 1f;
-
-        [Tooltip("Walk Wheel Radius")]
-        public float WalkWheelRadius = 1f;
-
-        [Tooltip("Sprint Wheel Radius")]
-        public float SprintWheelRadius = 1f;
-
-        public bool StrideWheelVisible = false;
-
-        public bool trailVisible = false;
 
         public AudioClip LandingAudioClip;
         public AudioClip[] FootstepAudioClips;
@@ -95,17 +80,12 @@ namespace StarterAssets
         private float _cinemachineTargetPitch;
 
         // player
-        private Vector3 _previousHorizontalVelocity;
-        private Vector3 _smoothedAcceleration = Vector3.zero;
-        private float _rotation;
+        private float _speed;
         private float _animationBlend;
+        private float _inputAngle = 0.0f;
         private float _rotationVelocity;
         private float _verticalVelocity;
-        private float _terminalVelocity = -53.0f;
-        private float _previousStrideWheelRotation = 0;
-        private bool _bounce = false;
-        private float _bounceOffset;
-        private float _bounceSpeedMult;
+        private float _terminalVelocity = 53.0f;
 
         // timeout deltatime
         private float _jumpTimeoutDelta;
@@ -116,7 +96,7 @@ namespace StarterAssets
         private int _animIDGrounded;
         private int _animIDJump;
         private int _animIDFreeFall;
-        private int _animIDStride;
+        private int _animIDMotionSpeed;
 
 #if ENABLE_INPUT_SYSTEM 
         private PlayerInput _playerInput;
@@ -125,9 +105,6 @@ namespace StarterAssets
         private CharacterController _controller;
         private StarterAssetsInputs _input;
         private GameObject _mainCamera;
-        [SerializeField] private GameObject _strideWheel;
-        private Renderer _strideWheelRenderer;
-        [SerializeField] private GameObject _trail;
 
         private const float _threshold = 0.01f;
 
@@ -140,7 +117,7 @@ namespace StarterAssets
 #if ENABLE_INPUT_SYSTEM
                 return _playerInput.currentControlScheme == "KeyboardMouse";
 #else
-                return false;
+				return false;
 #endif
             }
         }
@@ -165,7 +142,7 @@ namespace StarterAssets
 #if ENABLE_INPUT_SYSTEM 
             _playerInput = GetComponent<PlayerInput>();
 #else
-            Debug.LogError( "Starter Assets package is missing dependencies. Please use Tools/Starter Assets/Reinstall Dependencies to fix it");
+			Debug.LogError( "Starter Assets package is missing dependencies. Please use Tools/Starter Assets/Reinstall Dependencies to fix it");
 #endif
 
             AssignAnimationIDs();
@@ -173,13 +150,6 @@ namespace StarterAssets
             // reset our timeouts on start
             _jumpTimeoutDelta = JumpTimeout;
             _fallTimeoutDelta = FallTimeout;
-
-
-            _strideWheel = Instantiate(_strideWheel, transform);
-            _strideWheelRenderer = _strideWheel.GetComponent<Renderer>();
-
-            _trail = Instantiate(_trail, transform);
-
         }
 
         private void Update()
@@ -202,13 +172,14 @@ namespace StarterAssets
             _animIDGrounded = Animator.StringToHash("Grounded");
             _animIDJump = Animator.StringToHash("Jump");
             _animIDFreeFall = Animator.StringToHash("FreeFall");
-            _animIDStride = Animator.StringToHash("Stride");
+            _animIDMotionSpeed = Animator.StringToHash("MotionSpeed");
         }
 
         private void GroundedCheck()
         {
             // set sphere position, with offset
-            Vector3 spherePosition = transform.TransformPoint(_controller.center) + new Vector3(0, -_controller.center.y - GroundedOffset, 0);
+            Vector3 spherePosition = new Vector3(transform.position.x, transform.position.y - GroundedOffset,
+                transform.position.z);
             Grounded = Physics.CheckSphere(spherePosition, GroundedRadius, GroundLayers,
                 QueryTriggerInteraction.Ignore);
 
@@ -242,189 +213,70 @@ namespace StarterAssets
 
         private void Move()
         {
-            Vector3 currentHorizontalVelocity = new(_controller.velocity.x, 0, _controller.velocity.z);
+            // set target speed based on move speed, sprint speed and if sprint is pressed
+            float targetSpeed = _input.sprint ? SprintSpeed : MoveSpeed;
 
-            float currentStrideWheelRotation = GetStrideWheelRotation(_previousStrideWheelRotation, currentHorizontalVelocity.magnitude);
+            // a simplistic acceleration and deceleration designed to be easy to remove, replace, or iterate upon
 
-            if (_hasAnimator)
-            {
-                UpdateAnimator(currentHorizontalVelocity.magnitude, currentStrideWheelRotation);
-            }
+            // note: Vector2's == operator uses approximation so is not floating point error prone, and is cheaper than magnitude
+            // if there is no input, set the target speed to 0
+            if (_input.move == Vector2.zero) targetSpeed = 0.0f;
 
-            UpdateBounce(_previousStrideWheelRotation, currentStrideWheelRotation, currentHorizontalVelocity.magnitude);
+            // a reference to the players current horizontal velocity
+            float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
 
-            ApplyYaw(currentHorizontalVelocity.normalized);
-
-            CalculateAcceleration(_previousHorizontalVelocity, currentHorizontalVelocity);
-
-            ApplyTilt(_smoothedAcceleration);
-
-            float inputAngle = Mathf.Atan2(_input.move.x, _input.move.y) * Mathf.Rad2Deg + _mainCamera.transform.eulerAngles.y;
-
-            Vector3 targetVelocity = GetTargetVelocity(inputAngle);
-
-            Vector3 newHorizontalVelocity = GetNewVelocity(targetVelocity, currentHorizontalVelocity);
-            MovePlayer(newHorizontalVelocity);
-
-            _previousHorizontalVelocity = currentHorizontalVelocity;
-            _previousStrideWheelRotation = currentStrideWheelRotation;
-
-        }
-
-        private float GetStrideWheelRotation(float previousStrideWheelRotation, float currentHorizontalSpeed)
-        {
-            _strideWheelRenderer.enabled = StrideWheelVisible;
-
-            float lowerBound = 2;
-
-            float t = (currentHorizontalSpeed - lowerBound) / ((SprintSpeed - lowerBound) * .6f);
-
-            float radius = Mathf.Lerp(WalkWheelRadius, SprintWheelRadius, t);
-            _strideWheel.transform.localScale = new Vector3(radius * 2, radius * 2, radius * 2);
-            _strideWheel.transform.localPosition = new Vector3(0, radius, 0);
-
-            float distanceMoved = currentHorizontalSpeed * Time.deltaTime;
-
-            float circumference = radius * 2 * Mathf.PI;
-
-            // Calculate how much the wheel should rotate based on distance moved
-            float rotationAngle = distanceMoved / circumference * 360f;
-
-            float currentStrideWheelRotation = previousStrideWheelRotation + rotationAngle;
-
-            currentStrideWheelRotation %= 360f; // Ensure the angle stays within 0-360
-
-            // Apply the rotation to the wheel
-            _strideWheel.transform.localRotation = Quaternion.Euler(0f, 90, currentStrideWheelRotation);
-
-            return currentStrideWheelRotation;
-        }
-
-        private void UpdateBounce(float previousStrideRotation, float currentStrideRotation, float currentHorizontalSpeed)
-        {
             float speedOffset = 0.1f;
-            if (previousStrideRotation % 180 < 135 && currentStrideRotation % 180 > 135)
+            float inputMagnitude = _input.analogMovement ? _input.move.magnitude : 1f;
+
+            // accelerate or decelerate to target speed
+            if (currentHorizontalSpeed < targetSpeed - speedOffset ||
+                currentHorizontalSpeed > targetSpeed + speedOffset)
             {
-                _bounce = currentHorizontalSpeed > 0.7 * SprintSpeed + speedOffset && Grounded;
-                _bounceSpeedMult = 1 - (currentHorizontalSpeed / SprintSpeed);
-            }
+                // creates curved result rather than a linear one giving a more organic speed change
+                // note T in Lerp is clamped, so we don't need to clamp our speed
+                _speed = Mathf.Lerp(currentHorizontalSpeed, targetSpeed * inputMagnitude,
+                    Time.deltaTime * SpeedChangeRate);
 
-            if (currentHorizontalSpeed < 0.7 * SprintSpeed + speedOffset)
-            {
-                _bounce = false;
-                _bounceOffset -= 2f * Time.deltaTime;
-                if (_bounceOffset < 0) _bounceOffset = 0;
-            } else
-            {
-                _bounceOffset = _bounce ? Mathf.Abs(Mathf.Sin((currentStrideRotation + 45) * Mathf.Deg2Rad)) * (.4f * _bounceSpeedMult + 0.1f) : 0;
-            }
-        }
-
-        private void ApplyYaw(Vector3 currentHorizontalDirection)
-        {
-            if (_input.move != Vector2.zero)
-            {
-                float targetRotation = Mathf.Atan2(currentHorizontalDirection.x, currentHorizontalDirection.z) * Mathf.Rad2Deg;
-                _rotation = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetRotation, ref _rotationVelocity, RotationSmoothTime);
-            }
-
-            transform.rotation = Quaternion.Euler(0, _rotation, 0);
-        }
-
-        private void CalculateAcceleration(Vector3 previousHorizontalVelocity, Vector3 currentHorizontalVelocity)
-        {
-            Vector3 acceleration = Vector3.zero;
-            float speedDifference = Mathf.Abs(currentHorizontalVelocity.magnitude - previousHorizontalVelocity.magnitude);
-            float directionDifference = (currentHorizontalVelocity.normalized - previousHorizontalVelocity.normalized).magnitude;
-
-            if (speedDifference > 0.0001 || directionDifference > 0.001)
-            {
-                if (directionDifference > 0.001 && speedDifference <= 0.0001)
-                {
-                    // No significant difference in speed, just use direction
-                    acceleration = (currentHorizontalVelocity - previousHorizontalVelocity.normalized * currentHorizontalVelocity.magnitude) / Time.deltaTime;
-                }
-                else if (directionDifference <= 0.001 && speedDifference > 0.0001)
-                {
-                    // No significant difference in direction, just use speed
-                    acceleration = (currentHorizontalVelocity - currentHorizontalVelocity.normalized * previousHorizontalVelocity.magnitude) / Time.deltaTime;
-                }
-                else
-                {
-                    acceleration = (currentHorizontalVelocity - previousHorizontalVelocity) / Time.deltaTime;
-                }
-            }
-
-            acceleration = acceleration.normalized * Mathf.Clamp(acceleration.magnitude, 0, SprintSpeed * SpeedChangeRate * 10);
-
-            _smoothedAcceleration = Vector3.Lerp(_smoothedAcceleration, acceleration, Time.deltaTime * TiltChangeRate);
-        }
-
-        private void ApplyTilt(Vector3 smoothedAcceleration)
-        {
-
-            float tiltAngle = smoothedAcceleration.magnitude * tiltStrength;
-            Vector3 tiltAxis = Vector3.Cross(Vector3.up, smoothedAcceleration.normalized);
-
-            Vector3 localTiltAxis = transform.InverseTransformDirection(tiltAxis);
-            Quaternion localTiltRotation = Quaternion.AngleAxis(tiltAngle, localTiltAxis);
-
-            transform.rotation *= localTiltRotation;
-        }
-
-        private void UpdateAnimator(float speed, float stride)
-        {
-            _animationBlend = Mathf.Lerp(_animationBlend, speed, Time.deltaTime * SpeedChangeRate);
-            if (_animationBlend < 0.01f) _animationBlend = 0f;
-
-            _animator.SetFloat(_animIDSpeed, _animationBlend / SprintSpeed);
-
-            float u = stride % 180 / 180f;
-
-            _animator.SetFloat(_animIDStride, Cerp(Mathf.Floor(stride / 180f), Mathf.Ceil(stride / 180f), u) / 2);
-        }
-
-        private Vector3 GetTargetVelocity(float inputAngle)
-        {
-            if (_input.move == Vector2.zero)
-                return Vector3.zero;
-
-            float speed = _input.sprint ? SprintSpeed : MoveSpeed;
-            Vector3 targetVelocity = speed * (Quaternion.Euler(0.0f, inputAngle, 0.0f) * Vector3.forward);
-
-            if (_input.analogMovement)
-                targetVelocity *= _input.move.magnitude;
-
-            return targetVelocity;
-        }
-
-
-        private Vector3 GetNewVelocity(Vector3 targetVelocity, Vector3 previousHorizontalVelocity)
-        {
-            float speedOffset = 0.1f;
-            if ((previousHorizontalVelocity - targetVelocity).magnitude > speedOffset)
-            {
-                return Vector3.Lerp(previousHorizontalVelocity, targetVelocity, Time.deltaTime * SpeedChangeRate);
+                // round speed to 3 decimal places
+                _speed = Mathf.Round(_speed * 1000f) / 1000f;
             }
             else
             {
-                return targetVelocity;
+                _speed = targetSpeed;
             }
-        }
 
-        private void MovePlayer(Vector3 newHorizontalVelocity)
-        {
-            _controller.Move(newHorizontalVelocity.normalized * (newHorizontalVelocity.magnitude * Time.deltaTime) + new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
-        }
+            _animationBlend = Mathf.Lerp(_animationBlend, targetSpeed, Time.deltaTime * SpeedChangeRate);
+            if (_animationBlend < 0.01f) _animationBlend = 0f;
 
-        private void OnAnimatorIK(int layerIndex)
-        {
-            Vector3 rootPosition = _animator.bodyPosition;
-            rootPosition.y += _bounceOffset;
-            _animator.bodyPosition = rootPosition;
+            // normalize movement direction
+            Vector3 currentHorizontalDirection = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).normalized;
 
-            _trail.transform.position = rootPosition;
-            _trail.SetActive(trailVisible);
+            // note: Vector2's != operator uses approximation so is not floating point error prone, and is cheaper than magnitude
+            // if there is a move input rotate player when the player is moving
+            if (_input.move != Vector2.zero)
+            {
+                _inputAngle = Mathf.Atan2(_input.move.x, _input.move.y) * Mathf.Rad2Deg + _mainCamera.transform.eulerAngles.y;
+
+                float targetRotation = Mathf.Atan2(currentHorizontalDirection.x, currentHorizontalDirection.z) * Mathf.Rad2Deg;
+                float rotation = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetRotation, ref _rotationVelocity,
+                    RotationSmoothTime);
+
+                // rotate to face current movement direction.
+                transform.rotation = Quaternion.Euler(0.0f, rotation, 0.0f);
+            }
+
+            Vector3 targetDirection = Quaternion.Euler(0.0f, _inputAngle, 0.0f) * Vector3.forward;
+
+            // move the player
+            _controller.Move(targetDirection.normalized * (_speed * Time.deltaTime) +
+                             new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
+
+            // update animator if using character
+            if (_hasAnimator)
+            {
+                _animator.SetFloat(_animIDSpeed, _animationBlend);
+                _animator.SetFloat(_animIDMotionSpeed, inputMagnitude);
+            }
         }
 
         private void JumpAndGravity()
@@ -490,7 +342,7 @@ namespace StarterAssets
             }
 
             // apply gravity over time if under terminal (multiply by delta time twice to linearly speed up over time)
-            if (_verticalVelocity > _terminalVelocity)
+            if (_verticalVelocity < _terminalVelocity)
             {
                 _verticalVelocity += Gravity * Time.deltaTime;
             }
@@ -507,7 +359,6 @@ namespace StarterAssets
         {
             if (!Application.isPlaying || !isActiveAndEnabled)
                 return;
-
             Color transparentGreen = new Color(0.0f, 1.0f, 0.0f, 0.35f);
             Color transparentRed = new Color(1.0f, 0.0f, 0.0f, 0.35f);
 
@@ -516,9 +367,8 @@ namespace StarterAssets
 
             // when selected, draw a gizmo in the position of, and matching radius of, the grounded collider
             Gizmos.DrawSphere(
-                transform.TransformPoint(_controller.center) + new Vector3(0, -_controller.center.y - GroundedOffset, 0),
+                new Vector3(transform.position.x, transform.position.y - GroundedOffset, transform.position.z),
                 GroundedRadius);
-
         }
 
         private void OnFootstep(AnimationEvent animationEvent)
@@ -540,19 +390,5 @@ namespace StarterAssets
                 AudioSource.PlayClipAtPoint(LandingAudioClip, transform.TransformPoint(_controller.center), FootstepAudioVolume);
             }
         }
-
-        public static float Remap(float value, float fromMin, float fromMax, float toMin, float toMax)
-        {
-            return Mathf.Lerp(toMin, toMax, Mathf.InverseLerp(fromMin, fromMax, value));
-        }
-
-        public static float Cerp(float k0, float k1, float u)
-        {
-            u = Mathf.Clamp01(u);
-            float t1 = 2 * Mathf.Pow(u, 3) - 3 * Mathf.Pow(u, 2) + 1;
-            float t2 = 3 * Mathf.Pow(u, 2) - 2 * Mathf.Pow(u, 3);
-            return k0 * t1 + k1 * t2;
-        }
-
     }
 }

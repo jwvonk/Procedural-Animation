@@ -12,7 +12,7 @@ namespace StarterAssets
 #if ENABLE_INPUT_SYSTEM 
     [RequireComponent(typeof(PlayerInput))]
 #endif
-    public class ThirdPersonController : MonoBehaviour
+    public class ThirdPersonController_Bounce : MonoBehaviour
     {
         [Header("Player")]
         [Tooltip("Move speed of the character in m/s")]
@@ -303,20 +303,20 @@ namespace StarterAssets
         private void UpdateBounce(float previousStrideRotation, float currentStrideRotation, float currentHorizontalSpeed)
         {
             float speedOffset = 0.1f;
-            if (previousStrideRotation % 180 < 135 && currentStrideRotation % 180 > 135)
+            if (previousStrideRotation % 180 < 45 && currentStrideRotation % 180 > 45)
             {
-                _bounce = currentHorizontalSpeed > 0.7 * SprintSpeed + speedOffset && Grounded;
+                _bounce = currentHorizontalSpeed > MoveSpeed + speedOffset && Grounded;
                 _bounceSpeedMult = 1 - (currentHorizontalSpeed / SprintSpeed);
             }
 
-            if (currentHorizontalSpeed < 0.7 * SprintSpeed + speedOffset)
+            if (currentHorizontalSpeed < MoveSpeed + speedOffset)
             {
                 _bounce = false;
                 _bounceOffset -= 2f * Time.deltaTime;
                 if (_bounceOffset < 0) _bounceOffset = 0;
             } else
             {
-                _bounceOffset = _bounce ? Mathf.Abs(Mathf.Sin((currentStrideRotation + 45) * Mathf.Deg2Rad)) * (.4f * _bounceSpeedMult + 0.1f) : 0;
+                _bounceOffset = _bounce ? Mathf.Abs(Mathf.Sin((currentStrideRotation + 135) * Mathf.Deg2Rad)) * (.5f * _bounceSpeedMult + 0.2f) : 0;
             }
         }
 
@@ -379,9 +379,7 @@ namespace StarterAssets
 
             _animator.SetFloat(_animIDSpeed, _animationBlend / SprintSpeed);
 
-            float u = stride % 180 / 180f;
-
-            _animator.SetFloat(_animIDStride, Cerp(Mathf.Floor(stride / 180f), Mathf.Ceil(stride / 180f), u) / 2);
+            _animator.SetFloat(_animIDStride, Mathf.Floor(stride / 90f) / 4);
         }
 
         private Vector3 GetTargetVelocity(float inputAngle)
@@ -507,7 +505,7 @@ namespace StarterAssets
         {
             if (!Application.isPlaying || !isActiveAndEnabled)
                 return;
-
+                
             Color transparentGreen = new Color(0.0f, 1.0f, 0.0f, 0.35f);
             Color transparentRed = new Color(1.0f, 0.0f, 0.0f, 0.35f);
 
@@ -544,14 +542,6 @@ namespace StarterAssets
         public static float Remap(float value, float fromMin, float fromMax, float toMin, float toMax)
         {
             return Mathf.Lerp(toMin, toMax, Mathf.InverseLerp(fromMin, fromMax, value));
-        }
-
-        public static float Cerp(float k0, float k1, float u)
-        {
-            u = Mathf.Clamp01(u);
-            float t1 = 2 * Mathf.Pow(u, 3) - 3 * Mathf.Pow(u, 2) + 1;
-            float t2 = 3 * Mathf.Pow(u, 2) - 2 * Mathf.Pow(u, 3);
-            return k0 * t1 + k1 * t2;
         }
 
     }
