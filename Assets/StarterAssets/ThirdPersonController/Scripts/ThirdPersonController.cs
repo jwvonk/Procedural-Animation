@@ -16,28 +16,28 @@ namespace StarterAssets
     {
         [Header("Player")]
         [Tooltip("Move speed of the character in m/s")]
-        public float MoveSpeed = 2.0f;
+        public float MoveSpeed = 5.0f;
 
         [Tooltip("Sprint speed of the character in m/s")]
-        public float SprintSpeed = 5.335f;
+        public float SprintSpeed = 10.0f;
 
-        [Tooltip("How fast the character turns to face movement direction")]
-        public float RotationSmoothTime = 0.12f;
+        [Tooltip("Max acceleration of character in m/s/s")]
+        public float MaxAccelerationScalar = 5.0f;
 
-        [Tooltip("Acceleration and deceleration")]
-        public float SpeedChangeRate = 10.0f;
+        [Tooltip("Time it takes model to turn")]
+        public float RotationSmoothRate = 0.12f;
 
-        [Tooltip("Acceleration Tilt in Degrees")]
-        public float tiltStrength = 50f;
+        [Tooltip("Max Acceleration Tilt in Degrees")]
+        public float MaxTiltStrength = 10.0f;
 
-        [Tooltip("Acceleration Tilt in Degrees")]
-        public float TiltChangeRate = 1f;
+        [Tooltip("inverse of time it takes model to tilt")]
+        public float InverseTiltSmoothRate = 10.0f;
 
-        [Tooltip("Walk Wheel Radius")]
-        public float WalkWheelRadius = 1f;
+        [Tooltip("Stride length when walking")]
+        public float WalkWheelRadius = 0.3f;
 
-        [Tooltip("Sprint Wheel Radius")]
-        public float SprintWheelRadius = 1f;
+        [Tooltip("Stride length when running")]
+        public float SprintWheelRadius = 0.6f;
 
         public bool StrideWheelVisible = false;
 
@@ -96,7 +96,7 @@ namespace StarterAssets
 
         // player
         private Vector3 _previousHorizontalVelocity;
-        private Vector3 _smoothedAcceleration = Vector3.zero;
+        private Quaternion _smoothedTiltRotation = Quaternion.identity;
         private float _rotation;
         private float _animationBlend;
         private float _rotationVelocity;
@@ -253,11 +253,11 @@ namespace StarterAssets
 
             UpdateBounce(_previousStrideWheelRotation, currentStrideWheelRotation, currentHorizontalVelocity.magnitude);
 
-            ApplyYaw(currentHorizontalVelocity.normalized);
+            ApplyRotation(currentHorizontalVelocity.normalized);
 
-            CalculateAcceleration(_previousHorizontalVelocity, currentHorizontalVelocity);
+            Vector3 currentAcceleration = CalculateAcceleration(_previousHorizontalVelocity, currentHorizontalVelocity);
 
-            ApplyTilt(_smoothedAcceleration);
+            ApplyTilt(currentAcceleration);
 
             float inputAngle = Mathf.Atan2(_input.move.x, _input.move.y) * Mathf.Rad2Deg + _mainCamera.transform.eulerAngles.y;
 
@@ -320,61 +320,38 @@ namespace StarterAssets
             }
         }
 
-        private void ApplyYaw(Vector3 currentHorizontalDirection)
+        private void ApplyRotation(Vector3 currentHorizontalDirection)
         {
             if (_input.move != Vector2.zero)
             {
                 float targetRotation = Mathf.Atan2(currentHorizontalDirection.x, currentHorizontalDirection.z) * Mathf.Rad2Deg;
-                _rotation = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetRotation, ref _rotationVelocity, RotationSmoothTime);
+                _rotation = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetRotation, ref _rotationVelocity, RotationSmoothRate);
             }
 
             transform.rotation = Quaternion.Euler(0, _rotation, 0);
         }
 
-        private void CalculateAcceleration(Vector3 previousHorizontalVelocity, Vector3 currentHorizontalVelocity)
+        private Vector3 CalculateAcceleration(Vector3 previousHorizontalVelocity, Vector3 currentHorizontalVelocity)
         {
-            Vector3 acceleration = Vector3.zero;
-            float speedDifference = Mathf.Abs(currentHorizontalVelocity.magnitude - previousHorizontalVelocity.magnitude);
-            float directionDifference = (currentHorizontalVelocity.normalized - previousHorizontalVelocity.normalized).magnitude;
-
-            if (speedDifference > 0.0001 || directionDifference > 0.001)
-            {
-                if (directionDifference > 0.001 && speedDifference <= 0.0001)
-                {
-                    // No significant difference in speed, just use direction
-                    acceleration = (currentHorizontalVelocity - previousHorizontalVelocity.normalized * currentHorizontalVelocity.magnitude) / Time.deltaTime;
-                }
-                else if (directionDifference <= 0.001 && speedDifference > 0.0001)
-                {
-                    // No significant difference in direction, just use speed
-                    acceleration = (currentHorizontalVelocity - currentHorizontalVelocity.normalized * previousHorizontalVelocity.magnitude) / Time.deltaTime;
-                }
-                else
-                {
-                    acceleration = (currentHorizontalVelocity - previousHorizontalVelocity) / Time.deltaTime;
-                }
-            }
-
-            acceleration = acceleration.normalized * Mathf.Clamp(acceleration.magnitude, 0, SprintSpeed * SpeedChangeRate * 10);
-
-            _smoothedAcceleration = Vector3.Lerp(_smoothedAcceleration, acceleration, Time.deltaTime * TiltChangeRate);
+            Vector3 acceleration = (currentHorizontalVelocity - previousHorizontalVelocity) / Time.deltaTime;
+            return acceleration.normalized * Mathf.Clamp(acceleration.magnitude, 0, MaxAccelerationScalar);
         }
 
-        private void ApplyTilt(Vector3 smoothedAcceleration)
+        private void ApplyTilt(Vector3 acceleration)
         {
-
-            float tiltAngle = smoothedAcceleration.magnitude * tiltStrength;
-            Vector3 tiltAxis = Vector3.Cross(Vector3.up, smoothedAcceleration.normalized);
+            float tiltAngle = acceleration.magnitude * MaxTiltStrength / MaxAccelerationScalar;
+            Vector3 tiltAxis = Vector3.Cross(Vector3.up, acceleration.normalized);
 
             Vector3 localTiltAxis = transform.InverseTransformDirection(tiltAxis);
-            Quaternion localTiltRotation = Quaternion.AngleAxis(tiltAngle, localTiltAxis);
+            Quaternion targetTiltRotation = Quaternion.AngleAxis(tiltAngle, localTiltAxis);
+            _smoothedTiltRotation = Quaternion.Lerp(_smoothedTiltRotation, targetTiltRotation, Time.deltaTime * InverseTiltSmoothRate);
 
-            transform.rotation *= localTiltRotation;
+            transform.rotation *= _smoothedTiltRotation;
         }
 
         private void UpdateAnimator(float speed, float stride)
         {
-            _animationBlend = Mathf.Lerp(_animationBlend, speed, Time.deltaTime * SpeedChangeRate);
+            _animationBlend = Mathf.Lerp(_animationBlend, speed, Time.deltaTime * MaxAccelerationScalar);
             if (_animationBlend < 0.01f) _animationBlend = 0f;
 
             _animator.SetFloat(_animIDSpeed, _animationBlend / SprintSpeed);
@@ -398,13 +375,12 @@ namespace StarterAssets
             return targetVelocity;
         }
 
-
         private Vector3 GetNewVelocity(Vector3 targetVelocity, Vector3 previousHorizontalVelocity)
         {
-            float speedOffset = 0.1f;
+            float speedOffset = 0.01f;
             if ((previousHorizontalVelocity - targetVelocity).magnitude > speedOffset)
             {
-                return Vector3.Lerp(previousHorizontalVelocity, targetVelocity, Time.deltaTime * SpeedChangeRate);
+                return Vector3.Lerp(previousHorizontalVelocity, targetVelocity, Time.deltaTime * MaxAccelerationScalar);
             }
             else
             {
@@ -541,11 +517,6 @@ namespace StarterAssets
             }
         }
 
-        public static float Remap(float value, float fromMin, float fromMax, float toMin, float toMax)
-        {
-            return Mathf.Lerp(toMin, toMax, Mathf.InverseLerp(fromMin, fromMax, value));
-        }
-
         public static float Cerp(float k0, float k1, float u)
         {
             u = Mathf.Clamp01(u);
@@ -553,6 +524,5 @@ namespace StarterAssets
             float t2 = 3 * Mathf.Pow(u, 2) - 2 * Mathf.Pow(u, 3);
             return k0 * t1 + k1 * t2;
         }
-
     }
 }
