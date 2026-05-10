@@ -96,6 +96,7 @@ namespace StarterAssets
 
         // player
         private Vector3 _previousHorizontalVelocity;
+        private Vector3 _acceleration;
         private Quaternion _smoothedTiltRotation = Quaternion.identity;
         private float _rotation;
         private float _animationBlend;
@@ -191,6 +192,13 @@ namespace StarterAssets
             Move();
         }
 
+        private void FixedUpdate()
+        {
+            Vector3 currentHorizontalVelocity = new(_controller.velocity.x, 0, _controller.velocity.z);
+            _acceleration = CalculateAcceleration(_previousHorizontalVelocity, currentHorizontalVelocity);
+            _previousHorizontalVelocity = currentHorizontalVelocity;
+        }
+
         private void LateUpdate()
         {
             CameraRotation();
@@ -255,9 +263,7 @@ namespace StarterAssets
 
             ApplyRotation(currentHorizontalVelocity.normalized);
 
-            Vector3 currentAcceleration = CalculateAcceleration(_previousHorizontalVelocity, currentHorizontalVelocity);
-
-            ApplyTilt(currentAcceleration);
+            ApplyTilt(_acceleration);
 
             float inputAngle = Mathf.Atan2(_input.move.x, _input.move.y) * Mathf.Rad2Deg + _mainCamera.transform.eulerAngles.y;
 
@@ -266,7 +272,6 @@ namespace StarterAssets
             Vector3 newHorizontalVelocity = GetNewVelocity(targetVelocity, currentHorizontalVelocity);
             MovePlayer(newHorizontalVelocity);
 
-            _previousHorizontalVelocity = currentHorizontalVelocity;
             _previousStrideWheelRotation = currentStrideWheelRotation;
 
         }
@@ -314,9 +319,12 @@ namespace StarterAssets
                 _bounce = false;
                 _bounceOffset -= 2f * Time.deltaTime;
                 if (_bounceOffset < 0) _bounceOffset = 0;
+            } else if (_bounce)
+            {
+                _bounceOffset = Mathf.Abs(Mathf.Sin((currentStrideRotation + 80) * Mathf.Deg2Rad)) * (.4f * _bounceSpeedMult + .1f) ;
             } else
             {
-                _bounceOffset = _bounce ? Mathf.Abs(Mathf.Sin((currentStrideRotation + 45) * Mathf.Deg2Rad)) * (.4f * _bounceSpeedMult + 0.1f) : 0;
+                _bounceOffset = 0;
             }
         }
 
@@ -333,7 +341,7 @@ namespace StarterAssets
 
         private Vector3 CalculateAcceleration(Vector3 previousHorizontalVelocity, Vector3 currentHorizontalVelocity)
         {
-            Vector3 acceleration = (currentHorizontalVelocity - previousHorizontalVelocity) / Time.deltaTime;
+            Vector3 acceleration = (currentHorizontalVelocity - previousHorizontalVelocity) / Time.fixedDeltaTime;
             return acceleration.normalized * Mathf.Clamp(acceleration.magnitude, 0, MaxAccelerationScalar);
         }
 
